@@ -35,17 +35,6 @@ config = Config()
 crawler = WebCrawler(config.get_crawler_config())
 search_engine = SearchEngine(config.DATABASE_PATH, config.CACHE_TTL)
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/search_engine.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Pydantic models
 class SearchRequest(BaseModel):
     query: str
@@ -65,23 +54,6 @@ class ConfigUpdate(BaseModel):
 
 # Background task for crawling
 crawl_task = None
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize application on startup"""
-    # Create necessary directories
-    os.makedirs("logs", exist_ok=True)
-    os.makedirs("database", exist_ok=True)
-    os.makedirs("deliverables", exist_ok=True)
-    
-    logger.info("Search Engine API started")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    if crawler.is_crawling:
-        crawler.stop_crawling()
-    logger.info("Search Engine API stopped")
 
 @app.get("/")
 async def root():
@@ -114,7 +86,6 @@ async def update_config(config_update: ConfigUpdate):
         
         return {"message": "Configuration updated successfully"}
     except Exception as e:
-        logger.error(f"Error updating config: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/crawl/start")
@@ -131,7 +102,6 @@ async def start_crawl(background_tasks: BackgroundTasks):
         
         return {"message": "Crawling started"}
     except Exception as e:
-        logger.error(f"Error starting crawl: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 async def run_crawl():
@@ -140,7 +110,6 @@ async def run_crawl():
         seed_urls = config.SEED_URLS
         algorithm = config.CRAWL_ALGORITHM
         
-        logger.info(f"Starting {algorithm} crawl with {len(seed_urls)} seed URLs")
         
         if algorithm.lower() == 'dfs':
             results = await crawler.crawl_dfs(seed_urls)
@@ -150,10 +119,9 @@ async def run_crawl():
         # Store results in database
         if results:
             search_engine.store_pages(results)
-            logger.info(f"Crawling completed. Stored {len(results)} pages")
+
         
     except Exception as e:
-        logger.error(f"Error during crawling: {e}")
 
 @app.post("/crawl/stop")
 async def stop_crawl():
@@ -178,7 +146,6 @@ async def search(request: SearchRequest):
         )
         return results
     except Exception as e:
-        logger.error(f"Error during search: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/history")
@@ -187,7 +154,6 @@ async def get_search_history():
     try:
         return search_engine.get_search_history()
     except Exception as e:
-        logger.error(f"Error getting search history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")
@@ -200,7 +166,6 @@ async def get_stats():
         stats['crawl_status'] = crawl_status['status']
         return stats
     except Exception as e:
-        logger.error(f"Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/cache/clear")
@@ -210,7 +175,6 @@ async def clear_cache():
         deleted = search_engine.clear_cache()
         return {"message": f"Cleared {deleted} cache entries"}
     except Exception as e:
-        logger.error(f"Error clearing cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/export/pages")
@@ -250,7 +214,6 @@ async def export_pages():
             filename='exported_pages.json'
         )
     except Exception as e:
-        logger.error(f"Error exporting pages: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
