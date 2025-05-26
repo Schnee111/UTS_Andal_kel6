@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+aiohttp
+beautifulsoup4
+scikit-learn
+numpy
+pydantic
+python-multipart
+pytest
+pytest-asyncio
