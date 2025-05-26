@@ -15,7 +15,7 @@ Mesin pencari internal dengan algoritma BFS/DFS untuk organisasi internal. Siste
 
 ## 📁 Struktur Proyek
 
-\`\`\`
+```
 machine/
 ├── app/                    # Frontend Next.js
 │   ├── page.tsx           # Halaman utama aplikasi
@@ -34,7 +34,7 @@ machine/
 ├── main.py                # FastAPI server
 ├── requirements.txt       # Dependencies Python
 └── README.md              # Dokumentasi ini
-\`\`\`
+```
 
 ## 🛠️ Instalasi dan Setup
 
