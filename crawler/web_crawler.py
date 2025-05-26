@@ -34,7 +34,7 @@ class WebCrawler:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
-        
+       
     async def create_session(self):
         """Create aiohttp session with proper headers"""
         headers = {
