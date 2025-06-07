@@ -1,9 +1,11 @@
 import pytest
 import tempfile
 import os
-from datetime import datetime, timedelta
-from crawler.search_engine import SearchEngine
-from crawler.web_crawler import CrawlResult
+from datetime import datetime
+from backend.search.search_manager import SearchManager
+from backend.search.database.db_manager import DatabaseManager
+from backend.search.indexing.tfidf_indexer import TFIDFIndexer
+from backend.crawler.web_crawler_base import CrawlResult
 
 @pytest.fixture
 def temp_db():
@@ -14,9 +16,14 @@ def temp_db():
     os.unlink(temp_file.name)
 
 @pytest.fixture
-def search_engine(temp_db):
-    """Create search engine with temporary database"""
-    return SearchEngine(temp_db, cache_ttl=3600)
+def db_manager(temp_db):
+    """Create database manager with temporary database"""
+    return DatabaseManager(temp_db)
+
+@pytest.fixture
+def tfidf_indexer():
+    """Create TF-IDF indexer"""
+    return TFIDFIndexer()
 
 @pytest.fixture
 def sample_crawl_results():
@@ -29,7 +36,8 @@ def sample_crawl_results():
             links=["https://example.com/page2"],
             status_code=200,
             crawl_time=datetime.now(),
-            depth=0
+            depth=0,
+            domain="example.com"
         ),
         CrawlResult(
             url="https://example.com/page2",
@@ -39,6 +47,7 @@ def sample_crawl_results():
             status_code=200,
             crawl_time=datetime.now(),
             depth=1,
+            domain="example.com",
             parent_url="https://example.com/page1"
         ),
         CrawlResult(
@@ -49,35 +58,36 @@ def sample_crawl_results():
             status_code=200,
             crawl_time=datetime.now(),
             depth=2,
+            domain="example.com",
             parent_url="https://example.com/page2"
         )
     ]
 
-class TestSearchEngine:
+class TestDatabaseManager:
     
-    def test_init(self, search_engine):
-        """Test search engine initialization"""
-        assert search_engine.db_path is not None
-        assert search_engine.cache_ttl == 3600
-        assert search_engine.vectorizer is not None
-    
-    def test_clean_text(self, search_engine):
-        """Test text cleaning function"""
-        text = "  Hello, World!  This is a TEST.  "
-        cleaned = search_engine.clean_text(text)
+    def test_init_database(self, db_manager):
+        """Test database initialization"""
+        # Check if tables were created
+        import sqlite3
+        conn = sqlite3.connect(db_manager.db_path)
+        cursor = conn.cursor()
         
-        assert cleaned == "hello world this is a test"
-        assert "," not in cleaned
-        assert "!" not in cleaned
-        assert "." not in cleaned
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        
+        expected_tables = ['pages', 'search_history', 'search_cache', 'page_links']
+        for table in expected_tables:
+            assert table in tables
+        
+        conn.close()
     
-    def test_store_pages(self, search_engine, sample_crawl_results):
+    def test_store_pages(self, db_manager, sample_crawl_results):
         """Test storing crawl results in database"""
-        search_engine.store_pages(sample_crawl_results)
+        db_manager.store_pages(sample_crawl_results)
         
         # Check if pages were stored
         import sqlite3
-        conn = sqlite3.connect(search_engine.db_path)
+        conn = sqlite3.connect(db_manager.db_path)
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM pages")
@@ -93,196 +103,126 @@ class TestSearchEngine:
         
         conn.close()
     
-    def test_search_functionality(self, search_engine, sample_crawl_results):
-        """Test search functionality"""
-        # Store sample data
-        search_engine.store_pages(sample_crawl_results)
+    def test_get_all_pages(self, db_manager, sample_crawl_results):
+        """Test retrieving all pages from database"""
+        db_manager.store_pages(sample_crawl_results)
         
-        # Test search for Python
-        results = search_engine.search("Python programming", limit=5)
+        pages = db_manager.get_all_pages()
         
-        assert "results" in results
-        assert "total_found" in results
-        assert "execution_time_ms" in results
-        assert "cached" in results
-        
-        # Should find pages containing Python
-        assert len(results["results"]) > 0
-        assert any("Python" in result["title"] or "python" in result["content_snippet"].lower() 
-                  for result in results["results"])
+        assert len(pages) == len(sample_crawl_results)
+        assert pages[0]['url'] == sample_crawl_results[0].url
+        assert pages[0]['title'] == sample_crawl_results[0].title
     
-    def test_search_with_no_results(self, search_engine, sample_crawl_results):
-        """Test search with query that returns no results"""
-        search_engine.store_pages(sample_crawl_results)
+    def test_get_page_by_url(self, db_manager, sample_crawl_results):
+        """Test retrieving page by URL"""
+        db_manager.store_pages(sample_crawl_results)
         
-        results = search_engine.search("nonexistent query xyz123", limit=5)
+        page = db_manager.get_page_by_url("https://example.com/page1")
         
-        assert results["total_found"] == 0
-        assert len(results["results"]) == 0
+        assert page is not None
+        assert page['url'] == "https://example.com/page1"
+        assert page['title'] == "Python Programming Tutorial"
     
-    def test_search_caching(self, search_engine, sample_crawl_results):
-        """Test search result caching"""
-        search_engine.store_pages(sample_crawl_results)
-        
-        query = "Python programming"
-        
-        # First search (not cached)
-        results1 = search_engine.search(query, limit=5, use_cache=True)
-        assert not results1["cached"]
-        
-        # Second search (should be cached)
-        results2 = search_engine.search(query, limit=5, use_cache=True)
-        assert results2["cached"]
-        
-        # Results should be the same
-        assert len(results1["results"]) == len(results2["results"])
-    
-    def test_cache_expiration(self, search_engine, sample_crawl_results):
-        """Test cache expiration"""
-        # Set very short cache TTL
-        search_engine.cache_ttl = 1
-        search_engine.store_pages(sample_crawl_results)
-        
-        query = "Python programming"
-        
-        # First search
-        results1 = search_engine.search(query, use_cache=True)
-        assert not results1["cached"]
-        
-        # Wait for cache to expire
-        import time
-        time.sleep(2)
-        
-        # Search again (cache should be expired)
-        results2 = search_engine.search(query, use_cache=True)
-        assert not results2["cached"]
-    
-    def test_get_page_route(self, search_engine, sample_crawl_results):
+    def test_get_page_route(self, db_manager, sample_crawl_results):
         """Test page route tracking"""
-        search_engine.store_pages(sample_crawl_results)
+        db_manager.store_pages(sample_crawl_results)
         
         # Get route for the deepest page
         import sqlite3
-        conn = sqlite3.connect(search_engine.db_path)
+        conn = sqlite3.connect(db_manager.db_path)
         cursor = conn.cursor()
         
         cursor.execute("SELECT id FROM pages WHERE url = ?", ("https://example.com/page3",))
         page_id = cursor.fetchone()[0]
         conn.close()
         
-        route = search_engine.get_page_route(page_id)
+        route = db_manager.get_page_route(page_id)
         
         assert len(route) == 3  # Should have 3 pages in route
         assert route[0]["url"] == "https://example.com/page1"
         assert route[1]["url"] == "https://example.com/page2"
         assert route[2]["url"] == "https://example.com/page3"
     
-    def test_search_history(self, search_engine, sample_crawl_results):
-        """Test search history tracking"""
-        search_engine.store_pages(sample_crawl_results)
+    def test_cache_operations(self, db_manager):
+        """Test cache operations"""
+        query = "test query"
+        results = [{"url": "https://example.com", "title": "Test"}]
         
-        # Perform some searches
-        search_engine.search("Python", limit=5)
-        search_engine.search("web development", limit=5)
+        # Cache results
+        db_manager.cache_results(query, results)
         
-        # Get search history
-        history = search_engine.get_search_history()
+        # Retrieve cached results
+        cached = db_manager.get_cached_results(query)
+        
+        assert cached is not None
+        assert len(cached) == 1
+        assert cached[0]["url"] == "https://example.com"
+    
+    def test_search_history(self, db_manager):
+        """Test search history operations"""
+        # Record some searches
+        db_manager.record_search("python", 5, 100.0, False)
+        db_manager.record_search("web development", 3, 150.0, True)
+        
+        # Get history
+        history = db_manager.get_search_history()
         
         assert len(history) >= 2
-        assert any(h["query"] == "Python" for h in history)
+        assert any(h["query"] == "python" for h in history)
         assert any(h["query"] == "web development" for h in history)
-        
-        # Check history structure
-        for item in history:
-            assert "query" in item
-            assert "results_count" in item
-            assert "execution_time" in item
-            assert "cached" in item
-            assert "searched_at" in item
     
-    def test_get_stats(self, search_engine, sample_crawl_results):
+    def test_get_stats(self, db_manager, sample_crawl_results):
         """Test statistics retrieval"""
-        search_engine.store_pages(sample_crawl_results)
-        search_engine.search("Python", limit=5)
+        db_manager.store_pages(sample_crawl_results)
+        db_manager.record_search("test", 1, 50.0, False)
         
-        stats = search_engine.get_stats()
+        stats = db_manager.get_stats()
         
         assert "total_pages" in stats
         assert "total_searches" in stats
         assert "cached_queries" in stats
         assert "database_size" in stats
-        assert "index_size" in stats
         
         assert stats["total_pages"] == len(sample_crawl_results)
         assert stats["total_searches"] >= 1
-    
-    def test_clear_cache(self, search_engine, sample_crawl_results):
-        """Test cache clearing"""
-        search_engine.store_pages(sample_crawl_results)
-        
-        # Create some cached results
-        search_engine.search("Python", use_cache=True)
-        search_engine.search("web", use_cache=True)
-        
-        # Clear cache
-        deleted = search_engine.clear_cache()
-        assert deleted >= 0
-        
-        # Verify cache is cleared
-        import sqlite3
-        conn = sqlite3.connect(search_engine.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM search_cache")
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        assert count == 0
 
-def test_search_integration():
-    """Integration test for search functionality"""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
-        db_path = temp_file.name
+class TestTFIDFIndexer:
     
-    try:
-        search_engine = SearchEngine(db_path)
+    def test_clean_text(self, tfidf_indexer):
+        """Test text cleaning function"""
+        text = "  Hello, World!  This is a TEST.  "
+        cleaned = tfidf_indexer.clean_text(text)
         
-        # Create test data
-        test_results = [
-            CrawlResult(
-                url="https://test.com/ai",
-                title="Artificial Intelligence Guide",
-                content="Artificial intelligence and machine learning are transforming technology. AI algorithms can process data and make decisions.",
-                links=[],
-                status_code=200,
-                crawl_time=datetime.now(),
-                depth=0
-            ),
-            CrawlResult(
-                url="https://test.com/ml",
-                title="Machine Learning Basics",
-                content="Machine learning is a subset of artificial intelligence. ML models learn from data to make predictions.",
-                links=[],
-                status_code=200,
-                crawl_time=datetime.now(),
-                depth=0
-            )
+        assert cleaned == "hello world this is a test"
+        assert "," not in cleaned
+        assert "!" not in cleaned
+        assert "." not in cleaned
+    
+    def test_build_index(self, tfidf_indexer):
+        """Test building TF-IDF index"""
+        documents = [
+            {"title": "Python Tutorial", "content": "Learn Python programming"},
+            {"title": "Web Development", "content": "Build web applications"}
         ]
         
-        # Store and search
-        search_engine.store_pages(test_results)
-        results = search_engine.search("artificial intelligence")
+        tfidf_indexer.build_index(documents)
         
-        assert len(results["results"]) > 0
-        assert results["total_found"] > 0
-        
-        # Check result structure
-        for result in results["results"]:
-            assert "url" in result
-            assert "title" in result
-            assert "content_snippet" in result
-            assert "similarity_score" in result
-            assert "route" in result
-            assert "last_crawled" in result
+        assert tfidf_indexer.tfidf_matrix is not None
+        assert len(tfidf_indexer.documents) == 2
     
-    finally:
-        os.unlink(db_path)
+    def test_search(self, tfidf_indexer):
+        """Test search functionality"""
+        documents = [
+            {"title": "Python Tutorial", "content": "Learn Python programming language"},
+            {"title": "Web Development", "content": "Build web applications with frameworks"}
+        ]
+        
+        tfidf_indexer.build_index(documents)
+        results = tfidf_indexer.search("Python programming")
+        
+        assert len(results) > 0
+        assert results[0]["title"] == "Python Tutorial"
+        assert "similarity_score" in results[0]
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

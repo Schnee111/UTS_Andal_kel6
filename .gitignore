@@ -9,9 +9,6 @@
 
 # production
 /build
-/logs
-/crawler/__pycache__
-__pycache__
 
 # debug
 npm-debug.log*
